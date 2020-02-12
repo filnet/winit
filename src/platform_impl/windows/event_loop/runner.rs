@@ -327,10 +327,10 @@ impl<T> EventLoopRunner<T> {
                 self.pending_redraws.lock().insert(window_id.0);
             }
             (RunnerState::HandlingRedraw, _) => {
-                warn!("non-redraw event in redraw phase");
-                self.events_cleared();
-                self.new_events();
-                self.call_event_handler(event);
+                panic!(
+                    "Non-redraw event in redraw phase: {:?}",
+                    event.map_nonuser_event::<()>().ok()
+                );
             }
             (_, _) => {
                 self.runner_state = RunnerState::HandlingEvents;
