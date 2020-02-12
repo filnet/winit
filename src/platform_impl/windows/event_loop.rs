@@ -230,6 +230,10 @@ impl<T: 'static> EventLoop<T> {
                     winuser::DispatchMessageW(&mut msg);
 
                     msg_unprocessed = false;
+
+                    /*if msg.message == winuser::WM_PAINT {
+                        break;
+                    }*/
                 }
                 runner.events_cleared();
                 if let Err(payload) = runner.take_panic_error() {
