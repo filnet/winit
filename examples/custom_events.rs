@@ -11,7 +11,6 @@ fn main() {
         Timer,
     }
 
-    simple_logger::init().unwrap();
     let event_loop = EventLoop::<CustomEvent>::with_user_event();
 
     let _window = WindowBuilder::new()

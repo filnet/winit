@@ -18,7 +18,6 @@ fn main() {
     };
     let mut event_loop = EventLoop::new();
 
-    simple_logger::init().unwrap();
     let _window = WindowBuilder::new()
         .with_title("A fantastic window!")
         .build(&event_loop)
