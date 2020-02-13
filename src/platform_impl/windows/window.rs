@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use raw_window_handle::{windows::WindowsHandle, RawWindowHandle};
 use std::{
     cell::Cell,
+    collections::HashSet,
     ffi::OsStr,
     io, mem,
     os::windows::ffi::OsStrExt,
@@ -56,6 +57,8 @@ pub struct Window {
 
     // The events loop proxy.
     thread_executor: event_loop::EventLoopThreadExecutor,
+
+    pending_redraws: Arc<Mutex<HashSet<WindowId>>>,
 }
 
 impl Window {
@@ -136,14 +139,7 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
-        unsafe {
-            winuser::RedrawWindow(
-                self.window.0,
-                ptr::null(),
-                ptr::null_mut(),
-                winuser::RDW_INTERNALPAINT,
-            );
-        }
+        self.pending_redraws.lock().insert(self.id());
     }
 
     #[inline]
@@ -770,6 +766,7 @@ unsafe fn init<T: 'static>(
         window: real_window,
         window_state,
         thread_executor: event_loop.create_thread_executor(),
+        pending_redraws: event_loop.runner_shared.pending_redraws.clone(),
     };
 
     let dimensions = attributes

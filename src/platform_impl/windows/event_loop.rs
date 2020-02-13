@@ -227,56 +227,29 @@ impl<T: 'static> EventLoop<T> {
                             break;
                         }
                     }
+                    winuser::TranslateMessage(&mut msg);
+                    winuser::DispatchMessageW(&mut msg);
+
+                    unread_message_exists = false;
+
                     if msg.message == winuser::WM_PAINT {
-                        unread_message_exists = true;
                         break;
                     }
-                    winuser::TranslateMessage(&mut msg);
-                    winuser::DispatchMessageW(&mut msg);
-
-                    unread_message_exists = false;
                 }
-                runner.main_events_cleared();
-                loop {
-                    if !unread_message_exists {
-                        if 0 == winuser::PeekMessageW(
-                            &mut msg,
-                            ptr::null_mut(),
-                            winuser::WM_PAINT,
-                            winuser::WM_PAINT,
-                            1,
-                        ) {
-                            break;
+                runner.events_cleared();
+                match runner.control_flow() {
+                    ControlFlow::Exit => break 'main,
+                    ControlFlow::Wait => {
+                        assert!(!unread_message_exists);
+                        if 0 == winuser::GetMessageW(&mut msg, ptr::null_mut(), 0, 0) {
+                            break 'main;
                         }
+                        unread_message_exists = true;
                     }
-
-                    winuser::TranslateMessage(&mut msg);
-                    winuser::DispatchMessageW(&mut msg);
-
-                    unread_message_exists = false;
-                }
-                if runner.redraw_events_cleared().events_buffered() {
-                    if runner.control_flow() == ControlFlow::Exit {
-                        break 'main;
+                    ControlFlow::WaitUntil(resume_time) => {
+                        wait_until_time_or_msg(resume_time);
                     }
-                    continue;
-                }
-
-                if !unread_message_exists {
-                    let control_flow = runner.control_flow();
-                    match control_flow {
-                        ControlFlow::Exit => break 'main,
-                        ControlFlow::Wait => {
-                            if 0 == winuser::GetMessageW(&mut msg, ptr::null_mut(), 0, 0) {
-                                break 'main;
-                            }
-                            unread_message_exists = true;
-                        }
-                        ControlFlow::WaitUntil(resume_time) => {
-                            wait_until_time_or_msg(resume_time);
-                        }
-                        ControlFlow::Poll => (),
-                    }
+                    ControlFlow::Poll => (),
                 }
             }
         }
@@ -674,7 +647,6 @@ unsafe extern "system" fn public_window_callback<T: 'static>(
         }
 
         winuser::WM_PAINT => {
-            subclass_input.event_loop_runner.main_events_cleared();
             subclass_input.send_event(Event::RedrawRequested(RootWindowId(WindowId(window))));
             commctrl::DefSubclassProc(window, msg, wparam, lparam)
         }
@@ -1719,49 +1691,44 @@ unsafe extern "system" fn thread_event_target_callback<T: 'static>(
             let in_modal_loop = subclass_input.event_loop_runner.in_modal_loop();
             if in_modal_loop {
                 let mut msg = mem::zeroed();
-                if 0 == winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 0) {
-                    if msg.message != 0 && msg.message != winuser::WM_PAINT {
-                        queue_call_again();
-                        return 0;
+                loop {
+                    if 0 == winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 0) {
+                        break;
                     }
+                    // Clear all paint/timer messages from the queue before sending the events cleared message.
+                    match msg.message {
+                        // Flush the event queue of WM_PAINT messages.
+                        winuser::WM_PAINT | winuser::WM_TIMER => {
+                            // Remove the message from the message queue.
+                            winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 1);
 
-                    subclass_input.event_loop_runner.main_events_cleared();
-                    loop {
-                        if 0 == winuser::PeekMessageW(
-                            &mut msg,
-                            ptr::null_mut(),
-                            winuser::WM_PAINT,
-                            winuser::WM_PAINT,
-                            1,
-                        ) {
-                            break;
+                            if msg.hwnd != window {
+                                winuser::TranslateMessage(&mut msg);
+                                winuser::DispatchMessageW(&mut msg);
+                            }
                         }
-
-                        if msg.hwnd != window {
-                            winuser::TranslateMessage(&mut msg);
-                            winuser::DispatchMessageW(&mut msg);
+                        // If the message isn't one of those three, it may be handled by the modal
+                        // loop so we should return control flow to it.
+                        _ => {
+                            queue_call_again();
+                            return 0;
                         }
                     }
                 }
 
-                // we don't borrow until here because TODO SAFETY
                 let runner = &subclass_input.event_loop_runner;
-                if runner.redraw_events_cleared().events_buffered() {
-                    queue_call_again();
-                    runner.new_events();
-                } else {
-                    match runner.control_flow() {
-                        // Waiting is handled by the modal loop.
-                        ControlFlow::Exit | ControlFlow::Wait => runner.new_events(),
-                        ControlFlow::WaitUntil(resume_time) => {
-                            wait_until_time_or_msg(resume_time);
-                            runner.new_events();
-                            queue_call_again();
-                        }
-                        ControlFlow::Poll => {
-                            runner.new_events();
-                            queue_call_again();
-                        }
+                runner.events_cleared();
+                match runner.control_flow() {
+                    // Waiting is handled by the modal loop.
+                    ControlFlow::Exit | ControlFlow::Wait => runner.new_events(),
+                    ControlFlow::WaitUntil(resume_time) => {
+                        wait_until_time_or_msg(resume_time);
+                        runner.new_events();
+                        queue_call_again();
+                    }
+                    ControlFlow::Poll => {
+                        runner.new_events();
+                        queue_call_again();
                     }
                 }
             }
