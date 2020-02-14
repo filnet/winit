@@ -139,7 +139,18 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
-        self.pending_redraws.lock().insert(self.id());
+        if self.thread_executor.in_event_loop_thread() {
+            self.pending_redraws.lock().insert(self.id());
+        } else {
+            unsafe {
+                winuser::RedrawWindow(
+                    self.window.0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    winuser::RDW_INTERNALPAINT,
+                );
+            }
+        }
     }
 
     #[inline]

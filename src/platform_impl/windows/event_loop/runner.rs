@@ -384,7 +384,7 @@ impl<T> EventLoopRunner<T> {
     fn flush_redraws(&mut self) {
         let windows: Vec<_> = self.pending_redraws.lock().drain().collect();
         for wid in windows {
-            self.process_event(Event::RedrawRequested(WindowId(wid)));
+            self.call_event_handler(Event::RedrawRequested(WindowId(wid)));
         }
     }
 
