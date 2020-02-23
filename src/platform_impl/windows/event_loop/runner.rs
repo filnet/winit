@@ -1,11 +1,9 @@
-use parking_lot::Mutex;
 use std::{
     any::Any,
     cell::RefCell,
     collections::{HashSet, VecDeque},
     mem, panic, ptr,
     rc::Rc,
-    sync::Arc,
     time::Instant,
 };
 
@@ -23,7 +21,6 @@ pub(crate) type EventLoopRunnerShared<T> = Rc<ELRShared<T>>;
 pub(crate) struct ELRShared<T: 'static> {
     runner: RefCell<Option<EventLoopRunner<T>>>,
     buffer: RefCell<VecDeque<BufferedEvent<T>>>,
-    pub pending_redraws: Arc<Mutex<HashSet<PlatformWindowId>>>,
 }
 
 struct EventLoopRunner<T: 'static> {
@@ -33,7 +30,7 @@ struct EventLoopRunner<T: 'static> {
     in_modal_loop: bool,
     event_handler: Box<dyn FnMut(Event<'_, T>, &mut ControlFlow)>,
     panic_error: Option<PanicError>,
-    pending_redraws: Arc<Mutex<HashSet<PlatformWindowId>>>,
+    pending_redraws: HashSet<PlatformWindowId>,
 }
 
 pub type PanicError = Box<dyn Any + Send + 'static>;
@@ -84,7 +81,6 @@ impl<T> ELRShared<T> {
         ELRShared {
             runner: RefCell::new(None),
             buffer: RefCell::new(VecDeque::new()),
-            pending_redraws: Default::default(),
         }
     }
 
@@ -92,7 +88,7 @@ impl<T> ELRShared<T> {
     where
         F: FnMut(Event<'_, T>, &mut ControlFlow),
     {
-        let runner = EventLoopRunner::new(event_loop, self.pending_redraws.clone(), f);
+        let runner = EventLoopRunner::new(event_loop, f);
         {
             let mut runner_ref = self.runner.borrow_mut();
             *runner_ref = Some(runner);
@@ -116,7 +112,7 @@ impl<T> ELRShared<T> {
         }
     }
 
-    pub(crate) unsafe fn send_event(&self, event: Event<'_, T>) {
+    pub(crate) fn send_event(&self, event: Event<'_, T>) {
         if let Err(event) = self.send_event_unbuffered(event) {
             // If the runner is already borrowed, we're in the middle of an event loop invocation. Add
             // the event to a buffer to be processed later.
@@ -126,7 +122,7 @@ impl<T> ELRShared<T> {
         }
     }
 
-    unsafe fn send_event_unbuffered<'e>(&self, event: Event<'e, T>) -> Result<(), Event<'e, T>> {
+    fn send_event_unbuffered<'e>(&self, event: Event<'e, T>) -> Result<(), Event<'e, T>> {
         if let Ok(mut runner_ref) = self.runner.try_borrow_mut() {
             if let Some(ref mut runner) = *runner_ref {
                 runner.process_event(event);
@@ -153,19 +149,27 @@ impl<T> ELRShared<T> {
         }
     }
 
-    pub(crate) unsafe fn call_event_handler(&self, event: Event<'static, T>) {
-        if let Ok(mut runner_ref) = self.runner.try_borrow_mut() {
-            if let Some(ref mut runner) = *runner_ref {
-                runner.call_event_handler(event);
-                return;
-            }
+    pub(crate) fn main_events_cleared(&self) {
+        let mut runner_ref = self.runner.borrow_mut();
+        if let Some(ref mut runner) = *runner_ref {
+            runner.main_events_cleared();
+            // Dispatch any events that were buffered during the call to `main_events_cleared`.
+            self.dispatch_buffered_events(runner);
         }
     }
 
-    pub(crate) fn events_cleared(&self) {
+    pub(crate) fn redraw_events_cleared(&self) {
         let mut runner_ref = self.runner.borrow_mut();
         if let Some(ref mut runner) = *runner_ref {
-            runner.events_cleared();
+            runner.redraw_events_cleared();
+        }
+    }
+
+    pub(crate) fn destroy_loop(&self) {
+        if let Ok(mut runner_ref) = self.runner.try_borrow_mut() {
+            if let Some(ref mut runner) = *runner_ref {
+                runner.call_event_handler(Event::LoopDestroyed);
+            }
         }
     }
 
@@ -223,11 +227,7 @@ enum RunnerState {
 }
 
 impl<T> EventLoopRunner<T> {
-    unsafe fn new<F>(
-        event_loop: &EventLoop<T>,
-        pending_redraws: Arc<Mutex<HashSet<PlatformWindowId>>>,
-        f: F,
-    ) -> EventLoopRunner<T>
+    unsafe fn new<F>(event_loop: &EventLoop<T>, f: F) -> EventLoopRunner<T>
     where
         F: FnMut(Event<'_, T>, &mut ControlFlow),
     {
@@ -241,7 +241,7 @@ impl<T> EventLoopRunner<T> {
                 Box<dyn FnMut(Event<'_, T>, &mut ControlFlow)>,
             >(Box::new(f)),
             panic_error: None,
-            pending_redraws,
+            pending_redraws: Default::default(),
         }
     }
 
@@ -329,6 +329,34 @@ impl<T> EventLoopRunner<T> {
 
         // Now that an event has been received, we have to send any `NewEvents` calls that were
         // deferred.
+        self.handle_deferred_new();
+
+        match (self.runner_state, &event) {
+            (RunnerState::HandlingEvents, Event::RedrawRequested(window_id)) => {
+                self.call_event_handler(Event::MainEventsCleared);
+                self.runner_state = RunnerState::HandlingRedraw;
+                self.pending_redraws.insert(window_id.0);
+            }
+            (RunnerState::HandlingRedraw, Event::RedrawRequested(window_id)) => {
+                self.pending_redraws.insert(window_id.0);
+            }
+            (RunnerState::HandlingRedraw, _) => {
+                warn!("non-redraw event in redraw phase");
+                self.redraw_events_cleared();
+                self.flush_redraws();
+                self.runner_state = RunnerState::Idle(Instant::now());
+                self.new_events();
+                self.handle_deferred_new();
+                self.call_event_handler(event);
+            }
+            (_, _) => {
+                self.runner_state = RunnerState::HandlingEvents;
+                self.call_event_handler(event);
+            }
+        }
+    }
+
+    fn handle_deferred_new(&mut self) {
         if let RunnerState::DeferredNewEvents(wait_start) = self.runner_state {
             match self.control_flow {
                 ControlFlow::Exit | ControlFlow::Wait => {
@@ -357,52 +385,20 @@ impl<T> EventLoopRunner<T> {
                 // that was sent after `MainEventsCleared`.
                 ControlFlow::Poll => self.call_event_handler(Event::NewEvents(StartCause::Poll)),
             }
-        }
-
-        match (self.runner_state, &event) {
-            (RunnerState::HandlingRedraw, Event::RedrawRequested(window_id)) => {
-                self.pending_redraws.lock().insert(window_id.0);
-            }
-            (_, Event::RedrawRequested(window_id)) => {
-                self.call_event_handler(Event::MainEventsCleared);
-                self.runner_state = RunnerState::HandlingRedraw;
-                self.pending_redraws.lock().insert(window_id.0);
-            }
-            (RunnerState::HandlingRedraw, _) => {
-                warn!("non-redraw event in redraw phase");
-                self.events_cleared();
-                self.new_events();
-                self.call_event_handler(event);
-            }
-            (_, _) => {
-                self.runner_state = RunnerState::HandlingEvents;
-                self.call_event_handler(event);
-            }
+            self.runner_state = RunnerState::HandlingEvents;
         }
     }
 
-    fn flush_redraws(&mut self) {
-        let windows: Vec<_> = self.pending_redraws.lock().drain().collect();
-        for wid in windows {
-            self.call_event_handler(Event::RedrawRequested(WindowId(wid)));
-        }
-    }
-
-    fn events_cleared(&mut self) {
+    fn main_events_cleared(&mut self) {
         match self.runner_state {
             // If we were handling events, send the MainEventsCleared message.
             RunnerState::HandlingEvents => {
+                //println!("here 1");
                 self.call_event_handler(Event::MainEventsCleared);
                 self.runner_state = RunnerState::HandlingRedraw;
-                self.flush_redraws();
-                self.call_event_handler(Event::RedrawEventsCleared);
-                self.runner_state = RunnerState::Idle(Instant::now());
             }
 
             RunnerState::HandlingRedraw => {
-                self.flush_redraws();
-                self.call_event_handler(Event::RedrawEventsCleared);
-                self.runner_state = RunnerState::Idle(Instant::now());
             }
 
             // If we *weren't* handling events, we don't have to do anything.
@@ -418,8 +414,6 @@ impl<T> EventLoopRunner<T> {
                         self.runner_state = RunnerState::HandlingEvents;
                         self.call_event_handler(Event::MainEventsCleared);
                         self.runner_state = RunnerState::HandlingRedraw;
-                        self.flush_redraws();
-                        self.call_event_handler(Event::RedrawEventsCleared);
                     }
                     // If we had deferred a WaitUntil and the resume time has since been reached,
                     // send the resume notification and MainEventsCleared event.
@@ -434,17 +428,52 @@ impl<T> EventLoopRunner<T> {
                             self.runner_state = RunnerState::HandlingEvents;
                             self.call_event_handler(Event::MainEventsCleared);
                             self.runner_state = RunnerState::HandlingRedraw;
-                            self.flush_redraws();
-                            self.call_event_handler(Event::RedrawEventsCleared);
                         }
                     }
                     // If we deferred a wait and no events were received, the user doesn't have to
                     // get an event.
                     ControlFlow::Wait | ControlFlow::Exit => (),
                 }
-                // Mark that we've entered an idle state.
-                self.runner_state = RunnerState::Idle(wait_start)
             }
+        }
+    }
+
+    fn redraw_events_cleared(&mut self) {
+        match self.runner_state {
+            // If we were handling events, send the MainEventsCleared message.
+            RunnerState::HandlingEvents => {
+                panic!("redraw_events_cleared");
+            }
+
+            RunnerState::HandlingRedraw => {
+                self.flush_redraws();
+                self.call_event_handler(Event::RedrawEventsCleared);
+                self.runner_state = RunnerState::Idle(Instant::now());
+            }
+
+            // If we *weren't* handling events, we don't have to do anything.
+            RunnerState::New | RunnerState::Idle(..) => (),
+
+            RunnerState::DeferredNewEvents(_) => {
+                match self.control_flow {
+                    ControlFlow::Poll => {
+                        panic!("redraw_events_cleared 2");
+                    }
+                    // If we had deferred a WaitUntil and the resume time has since been reached,
+                    // send the resume notification and MainEventsCleared event.
+                    ControlFlow::WaitUntil(_) => {}
+                    // If we deferred a wait and no events were received, the user doesn't have to
+                    // get an event.
+                    ControlFlow::Wait | ControlFlow::Exit => (),
+                }
+            }
+        }
+    }
+
+    fn flush_redraws(&mut self) {
+        let windows: Vec<_> = self.pending_redraws.drain().collect();
+        for wid in windows {
+            self.call_event_handler(Event::RedrawRequested(WindowId(wid)));
         }
     }
 

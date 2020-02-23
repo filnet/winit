@@ -236,11 +236,12 @@ impl<T: 'static> EventLoop<T> {
                         break;
                     }
                 }
-                runner.events_cleared();
+                runner.main_events_cleared();
+                runner.redraw_events_cleared();
+                assert!(!unread_message_exists);
                 match runner.control_flow() {
                     ControlFlow::Exit => break 'main,
                     ControlFlow::Wait => {
-                        assert!(!unread_message_exists);
                         if 0 == winuser::GetMessageW(&mut msg, ptr::null_mut(), 0, 0) {
                             break 'main;
                         }
@@ -254,9 +255,7 @@ impl<T: 'static> EventLoop<T> {
             }
         }
 
-        unsafe {
-            runner.call_event_handler(Event::LoopDestroyed);
-        }
+        runner.destroy_loop();
         runner.destroy_runner();
     }
 
@@ -1690,34 +1689,9 @@ unsafe extern "system" fn thread_event_target_callback<T: 'static>(
             };
             let in_modal_loop = subclass_input.event_loop_runner.in_modal_loop();
             if in_modal_loop {
-                let mut msg = mem::zeroed();
-                loop {
-                    if 0 == winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 0) {
-                        break;
-                    }
-                    // Clear all paint/timer messages from the queue before sending the events cleared message.
-                    match msg.message {
-                        // Flush the event queue of WM_PAINT messages.
-                        winuser::WM_PAINT | winuser::WM_TIMER => {
-                            // Remove the message from the message queue.
-                            winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 1);
-
-                            if msg.hwnd != window {
-                                winuser::TranslateMessage(&mut msg);
-                                winuser::DispatchMessageW(&mut msg);
-                            }
-                        }
-                        // If the message isn't one of those three, it may be handled by the modal
-                        // loop so we should return control flow to it.
-                        _ => {
-                            queue_call_again();
-                            return 0;
-                        }
-                    }
-                }
-
                 let runner = &subclass_input.event_loop_runner;
-                runner.events_cleared();
+                runner.main_events_cleared();
+                runner.redraw_events_cleared();
                 match runner.control_flow() {
                     // Waiting is handled by the modal loop.
                     ControlFlow::Exit | ControlFlow::Wait => runner.new_events(),
