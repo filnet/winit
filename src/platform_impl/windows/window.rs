@@ -5,7 +5,8 @@ use raw_window_handle::{windows::WindowsHandle, RawWindowHandle};
 use std::{
     cell::Cell,
     ffi::OsStr,
-    io, mem,
+    io,
+    mem,
     os::windows::ffi::OsStrExt,
     ptr,
     sync::{mpsc::channel, Arc},
@@ -136,20 +137,12 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
+        let mut redraw_flags = winuser::RDW_INTERNALPAINT;
         if self.thread_executor.in_event_loop_thread() {
-            unsafe {
-                winuser::InvalidateRgn(self.window.0, ptr::null_mut(), 0);
-                winuser::UpdateWindow(self.window.0);
-            }
-        } else {
-            unsafe {
-                winuser::RedrawWindow(
-                    self.window.0,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    winuser::RDW_INTERNALPAINT,
-                );
-            }
+            redraw_flags |= winuser::RDW_UPDATENOW;
+        }
+        unsafe {
+            winuser::RedrawWindow(self.window.0, ptr::null(), ptr::null_mut(), redraw_flags);
         }
     }
 

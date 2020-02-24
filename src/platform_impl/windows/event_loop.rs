@@ -220,6 +220,9 @@ impl<T: 'static> EventLoop<T> {
                     panic::resume_unwind(payload);
                 }
 
+                // clear redraw requests done at window creation
+                runner.main_events_cleared();
+                runner.redraw_events_cleared();
                 runner.new_events();
                 loop {
                     if !unread_message_exists {
