@@ -32,7 +32,7 @@ fn main() {
         .unwrap();
 
     let mut mode = Mode::Wait;
-    let mut request_redraw = false;
+    let mut request_redraw = true;
     let mut wait_cancelled = false;
     let mut close_requested = false;
 
@@ -100,7 +100,13 @@ fn main() {
             Event::RedrawEventsCleared => {
                 *control_flow = match mode {
                     Mode::Wait => ControlFlow::Wait,
-                    Mode::WaitUntil => ControlFlow::WaitUntil(time::Instant::now() + WAIT_TIME),
+                    Mode::WaitUntil => {
+                        if wait_cancelled {
+                            *control_flow
+                        } else {
+                            ControlFlow::WaitUntil(time::Instant::now() + WAIT_TIME)
+                        }
+                    }
                     Mode::Poll => {
                         thread::sleep(POLL_SLEEP_TIME);
                         ControlFlow::Poll

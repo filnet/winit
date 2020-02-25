@@ -220,6 +220,9 @@ impl<T: 'static> EventLoop<T> {
                     panic::resume_unwind(payload);
                 }
 
+                // clear redraw requests done at window creation
+                //runner.main_events_cleared();
+                //runner.redraw_events_cleared();
                 runner.new_events();
                 loop {
                     if !unread_message_exists {
@@ -239,10 +242,12 @@ impl<T: 'static> EventLoop<T> {
                     unread_message_exists = false;
 
                     if msg.message == winuser::WM_PAINT {
+                        //println!("*** break");
                         break;
                     }
                 }
                 assert!(!unread_message_exists);
+                //println!("*** main_events_cleared");
                 runner.main_events_cleared();
                 // Drain eventual WM_PAINT messages sent if user called request_redraw()
                 // during handling of MainEventsCleared.
@@ -260,7 +265,9 @@ impl<T: 'static> EventLoop<T> {
                     winuser::TranslateMessage(&mut msg);
                     winuser::DispatchMessageW(&mut msg);
                 }
+                //println!("*** redraw_events_cleared");
                 runner.redraw_events_cleared();
+                //println!("*** done {:?}", runner.control_flow());
                 match runner.control_flow() {
                     ControlFlow::Exit => break 'main,
                     ControlFlow::Wait => {
@@ -668,6 +675,7 @@ unsafe extern "system" fn public_window_callback<T: 'static>(
         }
 
         winuser::WM_PAINT => {
+            println!("WM_PAINT");
             subclass_input.send_event(Event::RedrawRequested(RootWindowId(WindowId(window))));
             commctrl::DefSubclassProc(window, msg, wparam, lparam)
         }
@@ -1700,6 +1708,7 @@ unsafe extern "system" fn thread_event_target_callback<T: 'static>(
         // Because WM_PAINT comes after all other messages, we use it during modal loops to detect
         // when the event queue has been emptied. See `process_event` for more details.
         winuser::WM_PAINT => {
+            println!("WM_PAINT 2");
             winuser::ValidateRect(window, ptr::null());
             let queue_call_again = || {
                 winuser::RedrawWindow(
