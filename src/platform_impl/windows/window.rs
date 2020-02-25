@@ -137,12 +137,13 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
-        let mut redraw_flags = winuser::RDW_INTERNALPAINT;
-        if self.thread_executor.in_event_loop_thread() {
-            redraw_flags |= winuser::RDW_UPDATENOW;
-        }
         unsafe {
-            winuser::RedrawWindow(self.window.0, ptr::null(), ptr::null_mut(), redraw_flags);
+            winuser::RedrawWindow(
+                self.window.0,
+                ptr::null(),
+                ptr::null_mut(),
+                winuser::RDW_INTERNALPAINT,
+            );
         }
     }
 

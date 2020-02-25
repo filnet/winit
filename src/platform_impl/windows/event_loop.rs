@@ -221,12 +221,16 @@ impl<T: 'static> EventLoop<T> {
                 }
 
                 // clear redraw requests done at window creation
-                runner.main_events_cleared();
-                runner.redraw_events_cleared();
                 runner.new_events();
                 loop {
                     if !unread_message_exists {
-                        if 0 == winuser::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, 1) {
+                        if 0 == winuser::PeekMessageW(
+                            &mut msg,
+                            ptr::null_mut(),
+                            0,
+                            0,
+                            winuser::PM_REMOVE,
+                        ) {
                             break;
                         }
                     }
@@ -239,9 +243,23 @@ impl<T: 'static> EventLoop<T> {
                         break;
                     }
                 }
-                runner.main_events_cleared();
-                runner.redraw_events_cleared();
                 assert!(!unread_message_exists);
+                runner.main_events_cleared();
+                loop {
+                    if 0 == winuser::PeekMessageW(
+                        &mut msg,
+                        ptr::null_mut(),
+                        winuser::WM_PAINT,
+                        winuser::WM_PAINT,
+                        winuser::PM_REMOVE,
+                    ) {
+                        break;
+                    }
+
+                    winuser::TranslateMessage(&mut msg);
+                    winuser::DispatchMessageW(&mut msg);
+                }
+                runner.redraw_events_cleared();
                 match runner.control_flow() {
                     ControlFlow::Exit => break 'main,
                     ControlFlow::Wait => {
@@ -1694,6 +1712,23 @@ unsafe extern "system" fn thread_event_target_callback<T: 'static>(
             if in_modal_loop {
                 let runner = &subclass_input.event_loop_runner;
                 runner.main_events_cleared();
+                let mut msg = mem::zeroed();
+                loop {
+                    if 0 == winuser::PeekMessageW(
+                        &mut msg,
+                        ptr::null_mut(),
+                        winuser::WM_PAINT,
+                        winuser::WM_PAINT,
+                        winuser::PM_REMOVE,
+                    ) {
+                        break;
+                    }
+
+                    if msg.hwnd != window {
+                        winuser::TranslateMessage(&mut msg);
+                        winuser::DispatchMessageW(&mut msg);
+                    }
+                }
                 runner.redraw_events_cleared();
                 match runner.control_flow() {
                     // Waiting is handled by the modal loop.

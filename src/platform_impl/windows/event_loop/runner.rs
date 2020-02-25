@@ -1,11 +1,4 @@
-use std::{
-    any::Any,
-    cell::RefCell,
-    collections::{HashSet, VecDeque},
-    mem, panic, ptr,
-    rc::Rc,
-    time::Instant,
-};
+use std::{any::Any, cell::RefCell, collections::VecDeque, mem, panic, ptr, rc::Rc, time::Instant};
 
 use winapi::{shared::windef::HWND, um::winuser};
 
@@ -13,7 +6,7 @@ use crate::{
     dpi::PhysicalSize,
     event::{Event, StartCause, WindowEvent},
     event_loop::ControlFlow,
-    platform_impl::platform::event_loop::{util, EventLoop, WindowId as PlatformWindowId},
+    platform_impl::platform::event_loop::{util, EventLoop},
     window::WindowId,
 };
 
@@ -21,6 +14,7 @@ pub(crate) type EventLoopRunnerShared<T> = Rc<ELRShared<T>>;
 pub(crate) struct ELRShared<T: 'static> {
     runner: RefCell<Option<EventLoopRunner<T>>>,
     buffer: RefCell<VecDeque<BufferedEvent<T>>>,
+    //pub pending_redraws: Arc<Mutex<HashSet<PlatformWindowId>>>,
 }
 
 struct EventLoopRunner<T: 'static> {
@@ -30,7 +24,6 @@ struct EventLoopRunner<T: 'static> {
     in_modal_loop: bool,
     event_handler: Box<dyn FnMut(Event<'_, T>, &mut ControlFlow)>,
     panic_error: Option<PanicError>,
-    redraws: HashSet<PlatformWindowId>,
 }
 
 pub type PanicError = Box<dyn Any + Send + 'static>;
@@ -92,10 +85,7 @@ impl<T> ELRShared<T> {
         {
             let mut runner_ref = self.runner.borrow_mut();
             *runner_ref = Some(runner);
-            if let Some(ref mut runner) = *runner_ref {
-                // Dispatch any events that were buffered.
-                self.dispatch_buffered_events(runner);
-            }
+            assert!(self.buffer.borrow().is_empty());
         }
     }
 
@@ -107,9 +97,9 @@ impl<T> ELRShared<T> {
         let mut runner_ref = self.runner.borrow_mut();
         if let Some(ref mut runner) = *runner_ref {
             runner.new_events();
-            // Dispatch any events that were buffered during the call to `new_events`.
-            self.dispatch_buffered_events(runner);
+            assert!(self.buffer.borrow().is_empty());
         }
+        // TODO else !!!
     }
 
     pub(crate) fn send_event(&self, event: Event<'_, T>) {
@@ -153,16 +143,18 @@ impl<T> ELRShared<T> {
         let mut runner_ref = self.runner.borrow_mut();
         if let Some(ref mut runner) = *runner_ref {
             runner.main_events_cleared();
-            // Dispatch any events that were buffered during the call to `main_events_cleared`.
-            self.dispatch_buffered_events(runner);
+            assert!(self.buffer.borrow().is_empty());
         }
+        // TODO else !!!
     }
 
     pub(crate) fn redraw_events_cleared(&self) {
         let mut runner_ref = self.runner.borrow_mut();
         if let Some(ref mut runner) = *runner_ref {
             runner.redraw_events_cleared();
+            assert!(self.buffer.borrow().is_empty());
         }
+        // TODO else !!!
     }
 
     pub(crate) fn destroy_loop(&self) {
@@ -241,7 +233,6 @@ impl<T> EventLoopRunner<T> {
                 Box<dyn FnMut(Event<'_, T>, &mut ControlFlow)>,
             >(Box::new(f)),
             panic_error: None,
-            redraws: Default::default(),
         }
     }
 
@@ -364,14 +355,10 @@ impl<T> EventLoopRunner<T> {
             (RunnerState::HandlingEvents, Event::RedrawRequested(window_id)) => {
                 self.call_event_handler(Event::MainEventsCleared);
                 self.runner_state = RunnerState::HandlingRedraw;
-                if self.redraws.insert(window_id.0) {
-                    self.call_event_handler(Event::RedrawRequested(*window_id));
-                }
+                self.call_event_handler(Event::RedrawRequested(*window_id));
             }
             (RunnerState::HandlingRedraw, Event::RedrawRequested(window_id)) => {
-                if self.redraws.insert(window_id.0) {
-                    self.call_event_handler(Event::RedrawRequested(*window_id));
-                }
+                self.call_event_handler(Event::RedrawRequested(*window_id));
             }
             (RunnerState::HandlingRedraw, _) => {
                 panic!(
@@ -437,17 +424,15 @@ impl<T> EventLoopRunner<T> {
 
     fn redraw_events_cleared(&mut self) {
         match self.runner_state {
-            RunnerState::HandlingEvents => unreachable!(),
 
-            // If we were handling redraws, send the MainEventsCleared message.
+            // If we were handling redraws, send the RedrawsEventsCleared message.
             RunnerState::HandlingRedraw => {
                 self.call_event_handler(Event::RedrawEventsCleared);
-                self.redraws.clear();
                 self.runner_state = RunnerState::Idle(Instant::now());
             }
 
             // If we *weren't* handling redraws, we don't have to do anything.
-            RunnerState::New | RunnerState::Idle(..) | RunnerState::DeferredNewEvents(..) => (),
+            _ => (),
         }
     }
 
