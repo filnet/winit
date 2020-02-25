@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+//use std::time;
 use winit::{
     event::{ElementState, Event, KeyboardInput, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
+
+//const WAIT_TIME: time::Duration = time::Duration::from_millis(100);
 
 fn main() {
     simple_logger::init().unwrap();
@@ -17,7 +20,7 @@ fn main() {
 
     event_loop.run(move |event, event_loop, control_flow| {
         *control_flow = ControlFlow::Wait;
-
+        println!("{:?}", event);
         match event {
             Event::WindowEvent { event, window_id } => {
                 match event {
@@ -44,6 +47,14 @@ fn main() {
                     }
                     _ => (),
                 }
+            }
+            Event::MainEventsCleared => {
+                //for window in windows.values() {
+                //window.request_redraw();
+                //};
+            }
+            Event::RedrawEventsCleared => {
+                //*control_flow = ControlFlow::WaitUntil(time::Instant::now() + WAIT_TIME);
             }
             _ => (),
         }

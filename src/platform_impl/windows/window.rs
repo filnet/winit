@@ -4,6 +4,7 @@ use parking_lot::Mutex;
 use raw_window_handle::{windows::WindowsHandle, RawWindowHandle};
 use std::{
     cell::Cell,
+    //collections::HashSet,
     ffi::OsStr,
     io,
     mem,
@@ -137,6 +138,10 @@ impl Window {
 
     #[inline]
     pub fn request_redraw(&self) {
+        println!(
+            "*** request_redraw {}",
+            self.thread_executor.in_event_loop_thread()
+        );
         unsafe {
             winuser::RedrawWindow(
                 self.window.0,
@@ -771,6 +776,7 @@ unsafe fn init<T: 'static>(
         window: real_window,
         window_state,
         thread_executor: event_loop.create_thread_executor(),
+        //pending_redraws: event_loop.runner_shared.pending_redraws.clone(),
     };
 
     let dimensions = attributes
